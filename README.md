@@ -1,5 +1,5 @@
-# APK-framework-Identifier
-Give me your apk and i will tell you what framework that is being used
+# APK-FiD
+Give me your APK, I will give you framework name
 
 ## Usage
 
@@ -21,11 +21,11 @@ OPTIONS:
 
 ## Detection Support
 
-[x] React Native Framework
-[x] Flutter Framework
-[x] Ionic with Cordova/Capacitor
-[x] Framework7
-[x] NativeScript Framework
+- [x] React Native Framework
+- [x] Flutter Framework
+- [x] Ionic with Cordova/Capacitor
+- [x] Framework7
+- [x] NativeScript Framework
 
 ## License 
 
