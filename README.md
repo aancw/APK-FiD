@@ -21,11 +21,13 @@ OPTIONS:
 
 ## Detection Support
 
-- [x] React Native Framework
-- [x] Flutter Framework
-- [x] Ionic with Cordova/Capacitor
-- [x] Framework7
-- [x] NativeScript Framework
+- [x] [React Native Framework](https://reactnative.dev)
+- [x] [Flutter Framework](https://flutter.dev)
+- [x] [Ionic](http://ionicframework.com)
+- [x] [Cordova](http://cordova.apache.org) 
+- [x] [Capacitorjs](https://capacitorjs.com)
+- [x] [Framework7](http://framework7.io)
+- [x] [NativeScript Framework](https://nativescript.org)
 
 ## License 
 
