@@ -25,43 +25,46 @@ struct Cli {
     file: String,
 }
 
+
 fn detect_framework(reader: impl Read + Seek) {
     let mut zip = zip::ZipArchive::new(reader).unwrap();
     let mut found = false;
+    let mut vec_fw = Vec::new();
 
     for i in 0..zip.len() {
         let file = zip.by_index(i).unwrap();
-        
+
         if file.name() == "assets/index.android.bundle" {
-            println!("{}", "[*] React Native Framework Detected!".green());
-            found = true;
-            break;
-        } else if file.name().contains("res/raw/xml/config.xml") {
-            println!("{}", "[*] Ionic Framework + Cordova Detected!".green());
-            found = true;
-            break;
-        } else if file.name().contains("capacitor.config.json") {
-            println!("{}", "[*] Ionic Framework + Capacitor Detected!".green());
-            found = true;
-            break;
-        } else if file.name().contains("libflutter.so") || file.name().contains("libapp.so") || file.name().contains("flutter_assets")  {
-            println!("{}", "[*] Flutter Framework Detected!".green());
-            found = true;
-            break;
-        } else if file.name().contains("framework7.js") || file.name().contains("framework7.css") || file.name().contains("framework7-bundle.js")  {
-            println!("{}", "[*] Framework7 Detected!".green());
-            found = true;
-            break;
-        } else if file.name().contains("tsconfig.json") {
-            println!("{}", "[*] NativeScript Framework Detected!".green());
-            found = true;
-            break;
+            vec_fw.push("React Native");
+        } 
+        if file.name().contains("res/raw/xml/config.xml") {
+            vec_fw.push("Ionic + Cordova");
+        } 
+        if file.name().contains("capacitor.config.json") {
+            vec_fw.push("Ionic + Capacitor");
+        } 
+        if file.name().contains("libflutter.so") || file.name().contains("libapp.so") || file.name().contains("flutter_assets")  {
+            vec_fw.push("Flutter");
+        } 
+        if file.name().contains("framework7.js") || file.name().contains("framework7.css") || file.name().contains("framework7-bundle.js")  {
+            vec_fw.push("Framework7");
+        } 
+        if file.name().contains("tsconfig.json") {
+            vec_fw.push("NativeScript");
         }
     }
     
-    if !found {
-        println!("{}", "[*] Framework is unknown or using Native Android Platform".green());
+    println!("{}", "[*] Possible Framework Detected: \n".blue());
+    if vec_fw.is_empty() {
+        println!("{}", "[*] Framework is unknown or using Native Android Platform".red());
+    }else {
+        vec_fw.sort_unstable();
+        vec_fw.dedup();
+        for fw in &vec_fw {
+            println!("{}", &fw.green());
+        }
     }
+
 }
 
 fn main() {
