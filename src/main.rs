@@ -6,9 +6,12 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use colored::Colorize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::fmt;
 use std::fs::File;
 use std::io::{Read, Seek};
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "APK-FiD")]
@@ -18,11 +21,15 @@ use std::io::{Read, Seek};
 struct Cli {
     /// Android APK file location
     #[arg(short, long)]
-    file: String,
+    file: PathBuf,
 
     /// Output format: text or json
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     output: OutputFormat,
+
+    /// Optional JSON file containing extra framework signatures
+    #[arg(long)]
+    rules: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -44,12 +51,57 @@ struct Rule {
     signals: &'static [Signal],
 }
 
+#[derive(Clone, Debug)]
+struct RuntimeSignal {
+    needle: String,
+    score: u8,
+}
+
+#[derive(Clone, Debug)]
+struct RuntimeRule {
+    framework: String,
+    min_score: u8,
+    signals: Vec<RuntimeSignal>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ConfidenceTier {
+    Low,
+    Medium,
+    High,
+}
+
+impl ConfidenceTier {
+    fn from_percent(confidence_pct: u8) -> Self {
+        if confidence_pct >= 80 {
+            Self::High
+        } else if confidence_pct >= 50 {
+            Self::Medium
+        } else {
+            Self::Low
+        }
+    }
+}
+
+impl fmt::Display for ConfidenceTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Low => write!(f, "low"),
+            Self::Medium => write!(f, "medium"),
+            Self::High => write!(f, "high"),
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct Detection {
-    framework: &'static str,
+    framework: String,
     score: u16,
     confidence_pct: u8,
-    matched_signals: Vec<&'static str>,
+    confidence_tier: ConfidenceTier,
+    matched_signals: Vec<String>,
+    matched_files: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -57,6 +109,26 @@ struct DetectionReport {
     detected: Vec<Detection>,
     unknown_or_native_android: bool,
     inspected_entries: usize,
+    rules_loaded: usize,
+    custom_rules_loaded: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct CustomRulesFile {
+    rules: Vec<CustomRule>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CustomRule {
+    framework: String,
+    min_score: u8,
+    signals: Vec<CustomSignal>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CustomSignal {
+    needle: String,
+    score: u8,
 }
 
 const RULES: &[Rule] = &[
@@ -390,7 +462,72 @@ const RULES: &[Rule] = &[
     },
 ];
 
-fn detect_frameworks(reader: impl Read + Seek) -> Result<DetectionReport> {
+impl RuntimeRule {
+    fn from_static(rule: &Rule) -> Self {
+        Self {
+            framework: rule.framework.to_string(),
+            min_score: rule.min_score,
+            signals: rule
+                .signals
+                .iter()
+                .map(|signal| RuntimeSignal {
+                    needle: signal.needle.to_string(),
+                    score: signal.score,
+                })
+                .collect(),
+        }
+    }
+}
+
+fn builtin_rules() -> Vec<RuntimeRule> {
+    RULES.iter().map(RuntimeRule::from_static).collect()
+}
+
+fn load_custom_rules(path: &Path) -> Result<Vec<RuntimeRule>> {
+    let data = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read custom rule file: {}", path.display()))?;
+
+    let custom: CustomRulesFile = serde_json::from_str(&data).with_context(|| {
+        format!(
+            "failed to parse custom rule file as JSON: {}",
+            path.display()
+        )
+    })?;
+
+    let mut rules = Vec::with_capacity(custom.rules.len());
+    for rule in custom.rules {
+        if rule.framework.trim().is_empty() {
+            continue;
+        }
+        if rule.signals.is_empty() {
+            continue;
+        }
+
+        let signals = rule
+            .signals
+            .into_iter()
+            .filter(|signal| !signal.needle.trim().is_empty() && signal.score > 0)
+            .map(|signal| RuntimeSignal {
+                needle: signal.needle,
+                score: signal.score,
+            })
+            .collect::<Vec<_>>();
+
+        if signals.is_empty() {
+            continue;
+        }
+
+        rules.push(RuntimeRule {
+            framework: rule.framework,
+            min_score: rule.min_score,
+            signals,
+        });
+    }
+
+    Ok(rules)
+}
+
+fn detect_frameworks(reader: impl Read + Seek, rules: &[RuntimeRule]) -> Result<DetectionReport> {
     let mut zip = zip::ZipArchive::new(reader).context("failed to read APK as ZIP archive")?;
     let mut names = Vec::with_capacity(zip.len());
 
@@ -401,7 +538,7 @@ fn detect_frameworks(reader: impl Read + Seek) -> Result<DetectionReport> {
         names.push(file.name().to_string());
     }
 
-    let detected = RULES
+    let detected = rules
         .iter()
         .filter_map(|rule| score_rule(rule, &names))
         .collect::<Vec<_>>();
@@ -410,17 +547,27 @@ fn detect_frameworks(reader: impl Read + Seek) -> Result<DetectionReport> {
         unknown_or_native_android: detected.is_empty(),
         detected,
         inspected_entries: names.len(),
+        rules_loaded: rules.len(),
+        custom_rules_loaded: rules.len().saturating_sub(RULES.len()),
     })
 }
 
-fn score_rule(rule: &Rule, names: &[String]) -> Option<Detection> {
+fn score_rule(rule: &RuntimeRule, names: &[String]) -> Option<Detection> {
     let mut score = 0u16;
     let mut matched_signals = Vec::new();
+    let mut matched_files = Vec::new();
 
-    for signal in rule.signals {
-        if names.iter().any(|name| name.contains(signal.needle)) {
+    for signal in &rule.signals {
+        let hit_files = names
+            .iter()
+            .filter(|name| name.contains(signal.needle.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if !hit_files.is_empty() {
             score += u16::from(signal.score);
-            matched_signals.push(signal.needle);
+            matched_signals.push(signal.needle.clone());
+            matched_files.extend(hit_files);
         }
     }
 
@@ -433,13 +580,23 @@ fn score_rule(rule: &Rule, names: &[String]) -> Option<Detection> {
         .iter()
         .map(|signal| u16::from(signal.score))
         .sum::<u16>();
+
+    if max_score == 0 {
+        return None;
+    }
+
     let confidence_pct = ((score as f32 / max_score as f32) * 100.0).round() as u8;
+    let matched_files = BTreeSet::<String>::from_iter(matched_files)
+        .into_iter()
+        .collect::<Vec<_>>();
 
     Some(Detection {
-        framework: rule.framework,
+        framework: rule.framework.clone(),
         score,
         confidence_pct,
+        confidence_tier: ConfidenceTier::from_percent(confidence_pct),
         matched_signals,
+        matched_files,
     })
 }
 
@@ -464,13 +621,19 @@ fn print_banner() {
     );
 }
 
-fn print_text_report(file_loc: &str, report: &DetectionReport) {
+fn print_text_report(file_loc: &Path, report: &DetectionReport) {
     print_banner();
     println!(
         "{} {} {}",
         "[*] Using".blue(),
-        file_loc.red(),
+        file_loc.display().to_string().red(),
         "as input file".blue()
+    );
+    println!(
+        "{} {} (custom: {})",
+        "[*] Loaded rules:".blue(),
+        report.rules_loaded,
+        report.custom_rules_loaded
     );
     println!("{}", "[*] Detecting framework(s)...".blue());
     println!("{}", "[*] Possible Framework Detected:\n".blue());
@@ -484,29 +647,40 @@ fn print_text_report(file_loc: &str, report: &DetectionReport) {
     }
 
     let mut sorted = report.detected.iter().collect::<Vec<_>>();
-    sorted.sort_unstable_by_key(|d| (std::cmp::Reverse(d.confidence_pct), d.framework));
+    sorted.sort_unstable_by_key(|d| (std::cmp::Reverse(d.confidence_pct), d.framework.as_str()));
 
     for detection in sorted {
         println!(
-            "{} (confidence: {}%, score: {}, signals: {})",
+            "{} (confidence: {}% [{}], score: {}, signals: {})",
             detection.framework.green(),
             detection.confidence_pct,
+            detection.confidence_tier,
             detection.score,
             detection.matched_signals.join(", ")
         );
+
+        if !detection.matched_files.is_empty() {
+            println!("    evidence files: {}", detection.matched_files.join(", "));
+        }
     }
 }
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
-    let file_loc = cli.file;
 
-    let zipfile =
-        File::open(&file_loc).with_context(|| format!("failed to open input file: {file_loc}"))?;
-    let report = detect_frameworks(zipfile)?;
+    let zipfile = File::open(&cli.file)
+        .with_context(|| format!("failed to open input file: {}", cli.file.display()))?;
+
+    let mut rules = builtin_rules();
+    if let Some(rule_path) = &cli.rules {
+        let mut custom = load_custom_rules(rule_path)?;
+        rules.append(&mut custom);
+    }
+
+    let report = detect_frameworks(zipfile, &rules)?;
 
     match cli.output {
-        OutputFormat::Text => print_text_report(&file_loc, &report),
+        OutputFormat::Text => print_text_report(&cli.file, &report),
         OutputFormat::Json => {
             let json = serde_json::to_string_pretty(&report).context("failed to encode json")?;
             println!("{json}");
@@ -548,13 +722,17 @@ mod tests {
         bytes
     }
 
+    fn test_rules() -> Vec<RuntimeRule> {
+        builtin_rules()
+    }
+
     #[test]
     fn detects_flutter_with_high_confidence() {
         let apk = build_apk(&[
             "lib/arm64-v8a/libflutter.so",
             "assets/flutter_assets/AssetManifest.json",
         ]);
-        let report = detect_frameworks(apk).expect("detection should succeed");
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
 
         let flutter = report
             .detected
@@ -563,12 +741,13 @@ mod tests {
             .expect("flutter should be detected");
 
         assert!(flutter.confidence_pct >= 80);
+        assert!(matches!(flutter.confidence_tier, ConfidenceTier::High));
     }
 
     #[test]
     fn avoids_false_positive_nativescript_from_tsconfig_only() {
         let apk = build_apk(&["assets/tsconfig.json"]);
-        let report = detect_frameworks(apk).expect("detection should succeed");
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
 
         assert!(report
             .detected
@@ -579,7 +758,7 @@ mod tests {
     #[test]
     fn detects_react_native() {
         let apk = build_apk(&["assets/index.android.bundle"]);
-        let report = detect_frameworks(apk).expect("detection should succeed");
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
 
         assert!(report
             .detected
@@ -590,7 +769,7 @@ mod tests {
     #[test]
     fn returns_unknown_when_no_signal_matches() {
         let apk = build_apk(&["classes.dex", "AndroidManifest.xml"]);
-        let report = detect_frameworks(apk).expect("detection should succeed");
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
 
         assert!(report.unknown_or_native_android);
         assert!(report.detected.is_empty());
@@ -602,7 +781,7 @@ mod tests {
             "lib/arm64-v8a/libunity.so",
             "assets/bin/Data/globalgamemanagers",
         ]);
-        let report = detect_frameworks(apk).expect("detection should succeed");
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
 
         assert!(report.detected.iter().any(|d| d.framework == "Unity"));
     }
@@ -613,7 +792,7 @@ mod tests {
             "lib/arm64-v8a/libUE4.so",
             "assets/UE4Game/Content/Paks/game.pak",
         ]);
-        let report = detect_frameworks(apk).expect("detection should succeed");
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
 
         assert!(report
             .detected
@@ -627,7 +806,7 @@ mod tests {
             "lib/arm64-v8a/libmonodroid.so",
             "assemblies/Mono.Android.dll",
         ]);
-        let report = detect_frameworks(apk).expect("detection should succeed");
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
 
         assert!(report
             .detected
@@ -638,7 +817,7 @@ mod tests {
     #[test]
     fn detects_apache_weex() {
         let apk = build_apk(&["lib/arm64-v8a/libweexcore.so", "assets/weex-main-jsfm.js"]);
-        let report = detect_frameworks(apk).expect("detection should succeed");
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
 
         assert!(report.detected.iter().any(|d| d.framework == "Apache Weex"));
     }
@@ -649,7 +828,7 @@ mod tests {
             "lib/arm64-v8a/libQt6Core.so",
             "assets/qt-reserved-files/android_rcc_bundle.rcc",
         ]);
-        let report = detect_frameworks(apk).expect("detection should succeed");
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
 
         assert!(report
             .detected
@@ -660,7 +839,7 @@ mod tests {
     #[test]
     fn detects_godot() {
         let apk = build_apk(&["lib/arm64-v8a/libgodot_android.so", "assets/data.pck"]);
-        let report = detect_frameworks(apk).expect("detection should succeed");
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
 
         assert!(report.detected.iter().any(|d| d.framework == "Godot"));
     }
@@ -668,7 +847,7 @@ mod tests {
     #[test]
     fn detects_solar2d() {
         let apk = build_apk(&["lib/arm64-v8a/libcorona.so", "assets/resource.car"]);
-        let report = detect_frameworks(apk).expect("detection should succeed");
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
 
         assert!(report
             .detected
@@ -682,7 +861,7 @@ mod tests {
             "lib/arm64-v8a/libCore.so",
             "assets/META-INF/AIR/application.xml",
         ]);
-        let report = detect_frameworks(apk).expect("detection should succeed");
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
 
         assert!(report.detected.iter().any(|d| d.framework == "Adobe AIR"));
     }
@@ -694,7 +873,7 @@ mod tests {
             "assets/tiapp.xml",
             "org/appcelerator/titanium/TiApplication.class",
         ]);
-        let report = detect_frameworks(apk).expect("detection should succeed");
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
 
         assert!(report
             .detected
@@ -705,7 +884,7 @@ mod tests {
     #[test]
     fn detects_kivy_python_for_android() {
         let apk = build_apk(&["lib/arm64-v8a/libpython3.11.so", "assets/private.mp3"]);
-        let report = detect_frameworks(apk).expect("detection should succeed");
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
 
         assert!(report
             .detected
@@ -716,8 +895,54 @@ mod tests {
     #[test]
     fn detects_defold() {
         let apk = build_apk(&["lib/arm64-v8a/libdmengine.so", "assets/game.projectc"]);
-        let report = detect_frameworks(apk).expect("detection should succeed");
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
 
         assert!(report.detected.iter().any(|d| d.framework == "Defold"));
+    }
+
+    #[test]
+    fn includes_evidence_files() {
+        let apk = build_apk(&[
+            "lib/arm64-v8a/libflutter.so",
+            "assets/flutter_assets/AssetManifest.json",
+        ]);
+        let report = detect_frameworks(apk, &test_rules()).expect("detection should succeed");
+
+        let flutter = report
+            .detected
+            .iter()
+            .find(|d| d.framework == "Flutter")
+            .expect("flutter should be detected");
+
+        assert!(flutter
+            .matched_files
+            .iter()
+            .any(|f| f.contains("libflutter.so")));
+    }
+
+    #[test]
+    fn loads_custom_rule_file() {
+        let json = r#"{
+            "rules": [
+                {
+                    "framework": "CustomFW",
+                    "min_score": 60,
+                    "signals": [
+                        {"needle": "assets/customfw.json", "score": 60}
+                    ]
+                }
+            ]
+        }"#;
+
+        let path =
+            std::env::temp_dir().join(format!("apk_fid_custom_rules_{}.json", std::process::id()));
+
+        std::fs::write(&path, json).expect("must write custom rule file");
+        let rules = load_custom_rules(&path).expect("must parse custom rule file");
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].framework, "CustomFW");
+        assert_eq!(rules[0].signals[0].needle, "assets/customfw.json");
     }
 }

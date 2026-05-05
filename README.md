@@ -7,14 +7,16 @@ Give me your APK, I will give you framework name
 apk_fid --file app.apk
 apk_fid --file app.apk --output text
 apk_fid --file app.apk --output json
+apk_fid --file app.apk --rules custom_rules.json
 ```
 
 ```text
-Usage: apk_fid --file <FILE> [--output <OUTPUT>]
+Usage: apk_fid --file <FILE> [--output <OUTPUT>] [--rules <RULES>]
 
 Options:
   -f, --file <FILE>      Android APK file location
       --output <OUTPUT>  Output format [possible values: text, json] [default: text]
+      --rules <RULES>    Optional JSON file containing extra framework signatures
   -h, --help             Print help
   -V, --version          Print version
 ```
@@ -41,7 +43,29 @@ Options:
 - [x] [Kivy](https://kivy.org)
 - [x] [Defold](https://defold.com)
 
-Detection now uses weighted multi-signal matching and reports confidence percentage.
+Detection now uses weighted multi-signal matching and reports:
+- confidence percentage (`confidence_pct`)
+- confidence tier (`low`, `medium`, `high`)
+- evidence files (`matched_files`)
+
+## Custom Rules
+
+Use `--rules` with a JSON file to add signatures without code changes:
+
+```json
+{
+  "rules": [
+    {
+      "framework": "MyFramework",
+      "min_score": 60,
+      "signals": [
+        { "needle": "assets/myfw/config.json", "score": 60 },
+        { "needle": "lib/arm64-v8a/libmyfw.so", "score": 40 }
+      ]
+    }
+  ]
+}
+```
 
 ## License
 
