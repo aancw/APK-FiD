@@ -102,6 +102,13 @@ struct Detection {
     confidence_tier: ConfidenceTier,
     matched_signals: Vec<String>,
     matched_files: Vec<String>,
+    signal_evidence: Vec<SignalEvidence>,
+}
+
+#[derive(Debug, Serialize)]
+struct SignalEvidence {
+    signal: String,
+    files: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -556,9 +563,10 @@ fn score_rule(rule: &RuntimeRule, names: &[String]) -> Option<Detection> {
     let mut score = 0u16;
     let mut matched_signals = Vec::new();
     let mut matched_files = Vec::new();
+    let mut signal_evidence = Vec::new();
 
     for signal in &rule.signals {
-        let hit_files = names
+        let mut hit_files = names
             .iter()
             .filter(|name| name.contains(signal.needle.as_str()))
             .cloned()
@@ -567,7 +575,13 @@ fn score_rule(rule: &RuntimeRule, names: &[String]) -> Option<Detection> {
         if !hit_files.is_empty() {
             score += u16::from(signal.score);
             matched_signals.push(signal.needle.clone());
-            matched_files.extend(hit_files);
+            matched_files.extend(hit_files.iter().cloned());
+            hit_files.sort_unstable();
+            hit_files.dedup();
+            signal_evidence.push(SignalEvidence {
+                signal: signal.needle.clone(),
+                files: hit_files,
+            });
         }
     }
 
@@ -597,6 +611,7 @@ fn score_rule(rule: &RuntimeRule, names: &[String]) -> Option<Detection> {
         confidence_tier: ConfidenceTier::from_percent(confidence_pct),
         matched_signals,
         matched_files,
+        signal_evidence,
     })
 }
 
@@ -635,6 +650,11 @@ fn print_text_report(file_loc: &Path, report: &DetectionReport) {
         report.rules_loaded,
         report.custom_rules_loaded
     );
+    println!(
+        "{} {}",
+        "[*] APK entries scanned:".blue(),
+        report.inspected_entries
+    );
     println!("{}", "[*] Detecting framework(s)...".blue());
     println!("{}", "[*] Possible Framework Detected:\n".blue());
 
@@ -649,19 +669,36 @@ fn print_text_report(file_loc: &Path, report: &DetectionReport) {
     let mut sorted = report.detected.iter().collect::<Vec<_>>();
     sorted.sort_unstable_by_key(|d| (std::cmp::Reverse(d.confidence_pct), d.framework.as_str()));
 
-    for detection in sorted {
+    for (idx, detection) in sorted.iter().enumerate() {
         println!(
-            "{} (confidence: {}% [{}], score: {}, signals: {})",
-            detection.framework.green(),
-            detection.confidence_pct,
-            detection.confidence_tier,
-            detection.score,
-            detection.matched_signals.join(", ")
+            "{}",
+            format!("[{}] {}", idx + 1, detection.framework)
+                .green()
+                .bold()
         );
+        println!(
+            "    confidence : {}% [{}]",
+            detection.confidence_pct, detection.confidence_tier
+        );
+        println!("    score      : {}", detection.score);
+        println!("    signals    : {}", detection.matched_signals.join(", "));
 
-        if !detection.matched_files.is_empty() {
-            println!("    evidence files: {}", detection.matched_files.join(", "));
+        if detection.signal_evidence.is_empty() {
+            println!("    evidence   : none");
+        } else {
+            println!("    evidence   :");
+            for evidence in &detection.signal_evidence {
+                println!(
+                    "      - {} ({} matches)",
+                    evidence.signal,
+                    evidence.files.len()
+                );
+                for file in &evidence.files {
+                    println!("          {file}");
+                }
+            }
         }
+        println!();
     }
 }
 
@@ -920,6 +957,7 @@ mod tests {
             .any(|f| f.contains("libflutter.so")));
     }
 
+    #[test]
     #[test]
     fn loads_custom_rule_file() {
         let json = r#"{
