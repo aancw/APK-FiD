@@ -1,4 +1,4 @@
-// Copyright (c) 2022 Petruknisme
+// Copyright (c) 2026 Petruknisme
 //
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 #[command(version)]
 #[command(about = "Give me your APK, I will give you framework name")]
 struct Cli {
-    /// Android APK file location
+    /// Android APK file location, or folder containing APK files
     #[arg(short, long)]
     file: PathBuf,
 
@@ -118,6 +118,17 @@ struct DetectionReport {
     inspected_entries: usize,
     rules_loaded: usize,
     custom_rules_loaded: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct FileDetectionReport {
+    file: String,
+    report: DetectionReport,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchDetectionReport {
+    files: Vec<FileDetectionReport>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -534,6 +545,40 @@ fn load_custom_rules(path: &Path) -> Result<Vec<RuntimeRule>> {
     Ok(rules)
 }
 
+fn collect_apk_inputs(path: &Path) -> Result<Vec<PathBuf>> {
+    if path.is_file() {
+        return Ok(vec![path.to_path_buf()]);
+    }
+
+    if !path.is_dir() {
+        anyhow::bail!(
+            "input path is not a file or folder containing APK files: {}",
+            path.display()
+        );
+    }
+
+    let mut files = std::fs::read_dir(path)
+        .with_context(|| format!("failed to read input folder: {}", path.display()))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|entry_path| {
+            entry_path.is_file()
+                && entry_path
+                    .extension()
+                    .map(|ext| ext.to_string_lossy().eq_ignore_ascii_case("apk"))
+                    .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+
+    files.sort_unstable();
+
+    if files.is_empty() {
+        anyhow::bail!("no .apk files found in folder: {}", path.display());
+    }
+
+    Ok(files)
+}
+
 fn detect_frameworks(reader: impl Read + Seek, rules: &[RuntimeRule]) -> Result<DetectionReport> {
     let mut zip = zip::ZipArchive::new(reader).context("failed to read APK as ZIP archive")?;
     let mut names = Vec::with_capacity(zip.len());
@@ -636,8 +681,7 @@ fn print_banner() {
     );
 }
 
-fn print_text_report(file_loc: &Path, report: &DetectionReport) {
-    print_banner();
+fn print_text_report_body(file_loc: &Path, report: &DetectionReport) {
     println!(
         "{} {} {}",
         "[*] Using".blue(),
@@ -702,11 +746,30 @@ fn print_text_report(file_loc: &Path, report: &DetectionReport) {
     }
 }
 
+fn print_text_report(file_loc: &Path, report: &DetectionReport) {
+    print_banner();
+    print_text_report_body(file_loc, report);
+}
+
+fn print_text_reports(results: &[(PathBuf, DetectionReport)]) {
+    print_banner();
+    println!(
+        "{} {}",
+        "[*] Processing APK file(s):".blue(),
+        results.len()
+    );
+
+    for (index, (file_loc, report)) in results.iter().enumerate() {
+        if index > 0 {
+            println!();
+            println!("{}", "----------------------------------------".blue());
+        }
+        print_text_report_body(file_loc, report);
+    }
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
-
-    let zipfile = File::open(&cli.file)
-        .with_context(|| format!("failed to open input file: {}", cli.file.display()))?;
 
     let mut rules = builtin_rules();
     if let Some(rule_path) = &cli.rules {
@@ -714,12 +777,40 @@ fn run() -> Result<()> {
         rules.append(&mut custom);
     }
 
-    let report = detect_frameworks(zipfile, &rules)?;
+    let inputs = collect_apk_inputs(&cli.file)?;
+    let mut results = Vec::with_capacity(inputs.len());
+
+    for input in inputs {
+        let zipfile = File::open(&input)
+            .with_context(|| format!("failed to open input file: {}", input.display()))?;
+        let report = detect_frameworks(zipfile, &rules)?;
+        results.push((input, report));
+    }
 
     match cli.output {
-        OutputFormat::Text => print_text_report(&cli.file, &report),
+        OutputFormat::Text => {
+            if results.len() == 1 {
+                let (file_loc, report) = &results[0];
+                print_text_report(file_loc, report);
+            } else {
+                print_text_reports(&results);
+            }
+        }
         OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(&report).context("failed to encode json")?;
+            let json = if results.len() == 1 {
+                serde_json::to_string_pretty(&results[0].1).context("failed to encode json")?
+            } else {
+                let batch = BatchDetectionReport {
+                    files: results
+                        .into_iter()
+                        .map(|(file, report)| FileDetectionReport {
+                            file: file.display().to_string(),
+                            report,
+                        })
+                        .collect(),
+                };
+                serde_json::to_string_pretty(&batch).context("failed to encode json")?
+            };
             println!("{json}");
         }
     }
@@ -738,6 +829,7 @@ fn main() {
 mod tests {
     use super::*;
     use std::io::{Cursor, Write};
+    use std::time::{SystemTime, UNIX_EPOCH};
     use zip::write::FileOptions;
 
     fn build_apk(entries: &[&str]) -> Cursor<Vec<u8>> {
@@ -958,7 +1050,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn loads_custom_rule_file() {
         let json = r#"{
             "rules": [
@@ -982,5 +1073,68 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].framework, "CustomFW");
         assert_eq!(rules[0].signals[0].needle, "assets/customfw.json");
+    }
+
+    #[test]
+    fn collect_apk_inputs_accepts_single_file() {
+        let path =
+            std::env::temp_dir().join(format!("apk_fid_single_{}.apk", std::process::id()));
+        std::fs::write(&path, b"data").expect("must write temp file");
+
+        let files = collect_apk_inputs(&path).expect("must collect single apk file");
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(files, vec![path]);
+    }
+
+    #[test]
+    fn collect_apk_inputs_reads_apk_files_from_folder() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "apk_fid_folder_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        std::fs::create_dir_all(&dir).expect("must create test folder");
+
+        let alpha = dir.join("alpha.apk");
+        let beta = dir.join("beta.APK");
+        let ignore = dir.join("notes.txt");
+        std::fs::write(&alpha, b"a").expect("must write alpha apk");
+        std::fs::write(&beta, b"b").expect("must write beta apk");
+        std::fs::write(&ignore, b"n").expect("must write ignored file");
+
+        let files = collect_apk_inputs(&dir).expect("must collect apk files from folder");
+
+        std::fs::remove_file(&alpha).ok();
+        std::fs::remove_file(&beta).ok();
+        std::fs::remove_file(&ignore).ok();
+        std::fs::remove_dir(&dir).ok();
+
+        assert_eq!(files, vec![alpha, beta]);
+    }
+
+    #[test]
+    fn collect_apk_inputs_fails_for_folder_without_apk() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "apk_fid_empty_folder_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        std::fs::create_dir_all(&dir).expect("must create empty folder");
+        std::fs::write(dir.join("nope.txt"), b"x").expect("must write non-apk file");
+
+        let err = collect_apk_inputs(&dir).expect_err("must fail when no apk files are found");
+        std::fs::remove_file(dir.join("nope.txt")).ok();
+        std::fs::remove_dir(&dir).ok();
+
+        assert!(err.to_string().contains("no .apk files found"));
     }
 }

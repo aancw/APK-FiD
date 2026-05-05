@@ -5,6 +5,7 @@ Give me your APK, I will give you framework name
 
 ```bash
 apk_fid -f app.apk
+apk_fid -f ./apk-folder
 apk_fid -f app.apk -o text
 apk_fid -f app.apk -o json
 apk_fid -f app.apk -r custom_rules.json
@@ -14,7 +15,7 @@ apk_fid -f app.apk -r custom_rules.json
 Usage: apk_fid --file <FILE> [--output <OUTPUT>] [--rules <RULES>]
 
 Options:
-  -f, --file <FILE>      Android APK file location
+  -f, --file <FILE>      Android APK file location, or folder containing APK files
   -o, --output <OUTPUT>  Output format [possible values: text, json] [default: text]
   -r, --rules <RULES>    Optional JSON file containing extra framework signatures
   -h, --help             Print help
