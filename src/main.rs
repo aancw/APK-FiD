@@ -24,11 +24,11 @@ struct Cli {
     file: PathBuf,
 
     /// Output format: text or json
-    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    #[arg(short = 'o', long, value_enum, default_value_t = OutputFormat::Text)]
     output: OutputFormat,
 
     /// Optional JSON file containing extra framework signatures
-    #[arg(long)]
+    #[arg(short = 'r', long)]
     rules: Option<PathBuf>,
 }
 

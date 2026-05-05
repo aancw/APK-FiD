@@ -4,10 +4,10 @@ Give me your APK, I will give you framework name
 ## Usage
 
 ```bash
-apk_fid --file app.apk
-apk_fid --file app.apk --output text
-apk_fid --file app.apk --output json
-apk_fid --file app.apk --rules custom_rules.json
+apk_fid -f app.apk
+apk_fid -f app.apk -o text
+apk_fid -f app.apk -o json
+apk_fid -f app.apk -r custom_rules.json
 ```
 
 ```text
@@ -15,8 +15,8 @@ Usage: apk_fid --file <FILE> [--output <OUTPUT>] [--rules <RULES>]
 
 Options:
   -f, --file <FILE>      Android APK file location
-      --output <OUTPUT>  Output format [possible values: text, json] [default: text]
-      --rules <RULES>    Optional JSON file containing extra framework signatures
+  -o, --output <OUTPUT>  Output format [possible values: text, json] [default: text]
+  -r, --rules <RULES>    Optional JSON file containing extra framework signatures
   -h, --help             Print help
   -V, --version          Print version
 ```
