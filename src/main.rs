@@ -240,6 +240,154 @@ const RULES: &[Rule] = &[
             },
         ],
     },
+    Rule {
+        framework: "Apache Weex",
+        min_score: 80,
+        signals: &[
+            Signal {
+                needle: "libweexcore.so",
+                score: 50,
+            },
+            Signal {
+                needle: "assets/weex-main-jsfm.js",
+                score: 40,
+            },
+            Signal {
+                needle: "com/taobao/weex",
+                score: 40,
+            },
+        ],
+    },
+    Rule {
+        framework: "Qt for Android",
+        min_score: 80,
+        signals: &[
+            Signal {
+                needle: "libQt5Core.so",
+                score: 50,
+            },
+            Signal {
+                needle: "libQt6Core.so",
+                score: 50,
+            },
+            Signal {
+                needle: "assets/qt-reserved-files/",
+                score: 40,
+            },
+            Signal {
+                needle: "org/qtproject/qt",
+                score: 40,
+            },
+        ],
+    },
+    Rule {
+        framework: "Godot",
+        min_score: 80,
+        signals: &[
+            Signal {
+                needle: "libgodot_android.so",
+                score: 50,
+            },
+            Signal {
+                needle: "assets/data.pck",
+                score: 40,
+            },
+            Signal {
+                needle: "org/godotengine/godot",
+                score: 40,
+            },
+        ],
+    },
+    Rule {
+        framework: "Solar2D (Corona SDK)",
+        min_score: 80,
+        signals: &[
+            Signal {
+                needle: "libcorona.so",
+                score: 50,
+            },
+            Signal {
+                needle: "assets/resource.car",
+                score: 40,
+            },
+            Signal {
+                needle: "assets/main.lua",
+                score: 40,
+            },
+        ],
+    },
+    Rule {
+        framework: "Adobe AIR",
+        min_score: 80,
+        signals: &[
+            Signal {
+                needle: "libCore.so",
+                score: 40,
+            },
+            Signal {
+                needle: "assets/META-INF/AIR/",
+                score: 50,
+            },
+            Signal {
+                needle: "assets/air/",
+                score: 40,
+            },
+        ],
+    },
+    Rule {
+        framework: "Appcelerator Titanium",
+        min_score: 80,
+        signals: &[
+            Signal {
+                needle: "assets/Resources/",
+                score: 40,
+            },
+            Signal {
+                needle: "org/appcelerator/titanium",
+                score: 50,
+            },
+            Signal {
+                needle: "tiapp.xml",
+                score: 40,
+            },
+        ],
+    },
+    Rule {
+        framework: "Kivy / Python-for-Android",
+        min_score: 80,
+        signals: &[
+            Signal {
+                needle: "libpython",
+                score: 40,
+            },
+            Signal {
+                needle: "assets/private.mp3",
+                score: 40,
+            },
+            Signal {
+                needle: "org/kivy/android",
+                score: 50,
+            },
+        ],
+    },
+    Rule {
+        framework: "Defold",
+        min_score: 80,
+        signals: &[
+            Signal {
+                needle: "libdmengine.so",
+                score: 50,
+            },
+            Signal {
+                needle: "assets/game.arcd",
+                score: 40,
+            },
+            Signal {
+                needle: "assets/game.projectc",
+                score: 40,
+            },
+        ],
+    },
 ];
 
 fn detect_frameworks(reader: impl Read + Seek) -> Result<DetectionReport> {
@@ -485,5 +633,91 @@ mod tests {
             .detected
             .iter()
             .any(|d| d.framework == "Xamarin/.NET for Android"));
+    }
+
+    #[test]
+    fn detects_apache_weex() {
+        let apk = build_apk(&["lib/arm64-v8a/libweexcore.so", "assets/weex-main-jsfm.js"]);
+        let report = detect_frameworks(apk).expect("detection should succeed");
+
+        assert!(report.detected.iter().any(|d| d.framework == "Apache Weex"));
+    }
+
+    #[test]
+    fn detects_qt_for_android() {
+        let apk = build_apk(&[
+            "lib/arm64-v8a/libQt6Core.so",
+            "assets/qt-reserved-files/android_rcc_bundle.rcc",
+        ]);
+        let report = detect_frameworks(apk).expect("detection should succeed");
+
+        assert!(report
+            .detected
+            .iter()
+            .any(|d| d.framework == "Qt for Android"));
+    }
+
+    #[test]
+    fn detects_godot() {
+        let apk = build_apk(&["lib/arm64-v8a/libgodot_android.so", "assets/data.pck"]);
+        let report = detect_frameworks(apk).expect("detection should succeed");
+
+        assert!(report.detected.iter().any(|d| d.framework == "Godot"));
+    }
+
+    #[test]
+    fn detects_solar2d() {
+        let apk = build_apk(&["lib/arm64-v8a/libcorona.so", "assets/resource.car"]);
+        let report = detect_frameworks(apk).expect("detection should succeed");
+
+        assert!(report
+            .detected
+            .iter()
+            .any(|d| d.framework == "Solar2D (Corona SDK)"));
+    }
+
+    #[test]
+    fn detects_adobe_air() {
+        let apk = build_apk(&[
+            "lib/arm64-v8a/libCore.so",
+            "assets/META-INF/AIR/application.xml",
+        ]);
+        let report = detect_frameworks(apk).expect("detection should succeed");
+
+        assert!(report.detected.iter().any(|d| d.framework == "Adobe AIR"));
+    }
+
+    #[test]
+    fn detects_appcelerator_titanium() {
+        let apk = build_apk(&[
+            "assets/Resources/app.js",
+            "assets/tiapp.xml",
+            "org/appcelerator/titanium/TiApplication.class",
+        ]);
+        let report = detect_frameworks(apk).expect("detection should succeed");
+
+        assert!(report
+            .detected
+            .iter()
+            .any(|d| d.framework == "Appcelerator Titanium"));
+    }
+
+    #[test]
+    fn detects_kivy_python_for_android() {
+        let apk = build_apk(&["lib/arm64-v8a/libpython3.11.so", "assets/private.mp3"]);
+        let report = detect_frameworks(apk).expect("detection should succeed");
+
+        assert!(report
+            .detected
+            .iter()
+            .any(|d| d.framework == "Kivy / Python-for-Android"));
+    }
+
+    #[test]
+    fn detects_defold() {
+        let apk = build_apk(&["lib/arm64-v8a/libdmengine.so", "assets/game.projectc"]);
+        let report = detect_frameworks(apk).expect("detection should succeed");
+
+        assert!(report.detected.iter().any(|d| d.framework == "Defold"));
     }
 }
