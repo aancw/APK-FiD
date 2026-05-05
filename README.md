@@ -28,6 +28,10 @@ Options:
 - [x] [Capacitorjs](https://capacitorjs.com)
 - [x] [Framework7](http://framework7.io)
 - [x] [NativeScript Framework](https://nativescript.org)
+- [x] [Unity](https://unity.com)
+- [x] [Unreal Engine](https://www.unrealengine.com)
+- [x] [Xamarin / .NET for Android](https://dotnet.microsoft.com/apps/xamarin)
+- [x] [Cocos2d-x](https://www.cocos.com/en/cocos2dx)
 
 Detection now uses weighted multi-signal matching and reports confidence percentage.
 

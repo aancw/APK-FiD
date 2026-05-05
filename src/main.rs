@@ -168,6 +168,78 @@ const RULES: &[Rule] = &[
             },
         ],
     },
+    Rule {
+        framework: "Unity",
+        min_score: 80,
+        signals: &[
+            Signal {
+                needle: "libunity.so",
+                score: 60,
+            },
+            Signal {
+                needle: "assets/bin/Data/",
+                score: 50,
+            },
+            Signal {
+                needle: "globalgamemanagers",
+                score: 40,
+            },
+        ],
+    },
+    Rule {
+        framework: "Unreal Engine",
+        min_score: 80,
+        signals: &[
+            Signal {
+                needle: "libUE4.so",
+                score: 60,
+            },
+            Signal {
+                needle: "assets/UE4Game/",
+                score: 50,
+            },
+            Signal {
+                needle: ".pak",
+                score: 30,
+            },
+        ],
+    },
+    Rule {
+        framework: "Xamarin/.NET for Android",
+        min_score: 80,
+        signals: &[
+            Signal {
+                needle: "libmonodroid.so",
+                score: 50,
+            },
+            Signal {
+                needle: "assemblies/",
+                score: 40,
+            },
+            Signal {
+                needle: "Mono.Android.dll",
+                score: 40,
+            },
+        ],
+    },
+    Rule {
+        framework: "Cocos2d-x",
+        min_score: 70,
+        signals: &[
+            Signal {
+                needle: "libcocos2dcpp.so",
+                score: 50,
+            },
+            Signal {
+                needle: "assets/src/project.json",
+                score: 40,
+            },
+            Signal {
+                needle: "assets/main.js",
+                score: 30,
+            },
+        ],
+    },
 ];
 
 fn detect_frameworks(reader: impl Read + Seek) -> Result<DetectionReport> {
@@ -374,5 +446,44 @@ mod tests {
 
         assert!(report.unknown_or_native_android);
         assert!(report.detected.is_empty());
+    }
+
+    #[test]
+    fn detects_unity() {
+        let apk = build_apk(&[
+            "lib/arm64-v8a/libunity.so",
+            "assets/bin/Data/globalgamemanagers",
+        ]);
+        let report = detect_frameworks(apk).expect("detection should succeed");
+
+        assert!(report.detected.iter().any(|d| d.framework == "Unity"));
+    }
+
+    #[test]
+    fn detects_unreal_engine() {
+        let apk = build_apk(&[
+            "lib/arm64-v8a/libUE4.so",
+            "assets/UE4Game/Content/Paks/game.pak",
+        ]);
+        let report = detect_frameworks(apk).expect("detection should succeed");
+
+        assert!(report
+            .detected
+            .iter()
+            .any(|d| d.framework == "Unreal Engine"));
+    }
+
+    #[test]
+    fn detects_xamarin_dotnet() {
+        let apk = build_apk(&[
+            "lib/arm64-v8a/libmonodroid.so",
+            "assemblies/Mono.Android.dll",
+        ]);
+        let report = detect_frameworks(apk).expect("detection should succeed");
+
+        assert!(report
+            .detected
+            .iter()
+            .any(|d| d.framework == "Xamarin/.NET for Android"));
     }
 }
