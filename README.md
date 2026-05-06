@@ -68,6 +68,10 @@ Use `--rules` with a JSON file to add signatures without code changes:
 }
 ```
 
+## Blog Post
+
+The full write-up for APK-FiD https://medium.com/@petruknisme/apk-fid-android-framework-detection-cca3ef826307
+
 ## License
 
 MIT License
